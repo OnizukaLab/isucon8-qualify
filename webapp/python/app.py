@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 base_path = pathlib.Path(__file__).resolve().parent.parent
 static_folder = base_path / 'static'
 icons_folder = base_path / 'public' / 'icons'
+ranks_num = None
+ranks_id = None
+ranks_price = None
 
 
 class CustomFlask(flask.Flask):
@@ -91,6 +94,27 @@ def dbh():
     return flask.g.db
 
 
+def ranks_data():
+    global ranks_num, ranks_id, ranks_price
+    if ranks_num and ranks_id and ranks_price:
+        return
+    cur = dbh().cursor()
+    if ranks_num is None:
+        cur.execute("SELECT rank, COUNT(id) FROM sheets GROUP BY rank")
+        ranks_num = {e["rank"]: e["COUNT(id)"] for e in cur.fetchall()}
+
+    if ranks_price is None:
+        cur.execute("SELECT price, rank FROM sheets GROUP BY rank")
+        ranks_price = {e["rank"]: e["price"] for e in cur.fetchall()}
+
+    if ranks_id is None:
+        cur.execute("SELECT * FROM sheets ORDER BY `rank`, num")
+        sheets = cur.fetchall()
+        ranks_id = {k: dict() for k in ranks_num.keys()}
+        for sheet in sheets:
+            ranks_id[sheet["rank"]][sheet["id"]] = len(ranks_id[sheet["rank"]])
+
+
 @app.teardown_appcontext
 def teardown(error):
     if hasattr(flask.g, "db"):
@@ -120,6 +144,7 @@ def get_events(filter_fn=lambda e: True):
 
 def get_event(event_id, login_user_id=None):
     cur = dbh().cursor()
+    ranks_data()
     cur.execute("SELECT * FROM events WHERE id = %s", [event_id])
     event = cur.fetchone()
     if not event:
@@ -128,36 +153,39 @@ def get_event(event_id, login_user_id=None):
     event["total"] = 0
     event["remains"] = 0
     event["sheets"] = {}
-    for rank in ["S", "A", "B", "C"]:
+
+    for rank in ranks_num.keys():
         event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': []}
 
-    cur.execute("SELECT * FROM sheets ORDER BY `rank`, num")
-    sheets = cur.fetchall()
-    for sheet in sheets:
-        if not event['sheets'][sheet['rank']].get('price'):
-            event['sheets'][sheet['rank']]['price'] = event['price'] + sheet['price']
-        event['total'] += 1
-        event['sheets'][sheet['rank']]['total'] += 1
+    cur.execute(
+        "SELECT * FROM sheets LEFT OUTER JOIN reservations as r ON r.sheet_id = sheets.id"
+        " WHERE r.event_id = %s AND r.canceled_at IS NULL"
+        " GROUP BY sheet_id HAVING r.reserved_at = MIN(r.reserved_at)", [event['id']])
+    reservations = cur.fetchall()
 
-        cur.execute(
-            "SELECT * FROM reservations WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL"
-            " GROUP BY event_id, sheet_id HAVING reserved_at = MIN(reserved_at)",
-            [event['id'], sheet['id']])
-        reservation = cur.fetchone()
+    for rank in ranks_num.keys():
+        event['sheets'][rank]['detail'] = [{"num": i+1} for i in range(ranks_num[rank])]
+        event["sheets"][rank]["remains"] = ranks_num[rank]
+        event['sheets'][rank]['total'] = ranks_num[rank]
+        if not event['sheets'][rank].get('price'):
+            event["sheets"][rank]["price"] = event['price'] + ranks_price[rank]
+
+    event["remains"] = sum(ranks_num.values())
+    event['total'] = sum(ranks_num.values())
+    for reservation in reservations:
+        sheet = {
+            "num": reservation["num"]
+        }
+
         if reservation:
             if login_user_id and reservation['user_id'] == login_user_id:
                 sheet['mine'] = True
             sheet['reserved'] = True
             sheet['reserved_at'] = int(reservation['reserved_at'].replace(tzinfo=timezone.utc).timestamp())
-        else:
-            event['remains'] += 1
-            event['sheets'][sheet['rank']]['remains'] += 1
+            event["remains"] -= 1
+            event["sheets"][reservation["rank"]]["remains"] -= 1
 
-        event['sheets'][sheet['rank']]['detail'].append(sheet)
-
-        del sheet['id']
-        del sheet['price']
-        del sheet['rank']
+        event['sheets'][reservation['rank']]['detail'][ranks_id[reservation["rank"]][reservation["sheet_id"]]] = sheet
 
     event['public'] = True if event['public_fg'] else False
     event['closed'] = True if event['closed_fg'] else False
@@ -384,28 +412,26 @@ def post_reserve(event_id):
 
     reservation_id = 0
 
-    while True:
-        conn = dbh()
+    conn = dbh()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM sheets WHERE id NOT IN (SELECT sheet_id FROM reservations WHERE event_id = %s"
+        " AND canceled_at IS NULL FOR UPDATE) AND `rank` =%s ORDER BY RAND() LIMIT 1",
+        [event['id'], rank])
+    sheet = cur.fetchone()
+    if not sheet:
+        return res_error("sold_out", 409)
+    try:
+        conn.autocommit(False)
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM sheets WHERE id NOT IN (SELECT sheet_id FROM reservations WHERE event_id = %s"
-            " AND canceled_at IS NULL FOR UPDATE) AND `rank` =%s ORDER BY RAND() LIMIT 1",
-            [event['id'], rank])
-        sheet = cur.fetchone()
-        if not sheet:
-            return res_error("sold_out", 409)
-        try:
-            conn.autocommit(False)
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO reservations (event_id, sheet_id, user_id, reserved_at) VALUES (%s, %s, %s, %s)",
-                [event['id'], sheet['id'], user['id'], datetime.utcnow().strftime("%F %T.%f")])
-            reservation_id = cur.lastrowid
-            conn.commit()
-        except MySQLdb.Error as e:
-            conn.rollback()
-            print(e)
-        break
+            "INSERT INTO reservations (event_id, sheet_id, user_id, reserved_at) VALUES (%s, %s, %s, %s)",
+            [event['id'], sheet['id'], user['id'], datetime.utcnow().strftime("%F %T.%f")])
+        reservation_id = cur.lastrowid
+        conn.commit()
+    except MySQLdb.Error as e:
+        conn.rollback()
+        print(e)
 
     content = jsonify({
         "id": reservation_id,

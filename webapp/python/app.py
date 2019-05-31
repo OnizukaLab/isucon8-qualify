@@ -1,4 +1,4 @@
-import MySQLdb.cursors
+import sqlite3
 import flask
 import functools
 import os
@@ -8,7 +8,9 @@ import json
 import subprocess
 from io import StringIO
 import csv
-from datetime import datetime, timezone
+import time
+import hashlib
+from datetime import datetime
 
 base_path = pathlib.Path(__file__).resolve().parent.parent
 static_folder = base_path / 'static'
@@ -39,6 +41,13 @@ if not os.path.exists(str(icons_folder)):
 
 def make_base_url(request):
     return request.url_root[:-1]
+
+
+def fmt_datetime(datetime_str):
+    if datetime_str.rfind(".") == -1:
+        return datetime_str + ".000000"
+    else:
+        return datetime_str
 
 
 @app.template_filter('tojsonsafe')
@@ -74,23 +83,22 @@ def admin_login_required(f):
     return wrapper
 
 
-def dbh():
+def dict_factory(cursor, row):
+    d = {}
+    for idx, col in enumerate(cursor.description):
+        d[col[0]] = row[idx]
+    return d
+
+
+def dbh(isolation_level=None):
     if hasattr(flask.g, 'db'):
         return flask.g.db
-    flask.g.db = MySQLdb.connect(
-        host=os.environ['DB_HOST'],
-        port=3306,
-        user=os.environ['DB_USER'],
-        password=os.environ['DB_PASS'],
-        database=os.environ['DB_DATABASE'],
-        charset='utf8mb4',
-        cursorclass=MySQLdb.cursors.DictCursor,
-        autocommit=True,
-    )
-    cur = flask.g.db.cursor()
-    cur.execute(
-        "SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,"
-        "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
+    flask.g.db = sqlite3.connect("/root/isucon8-qualify/db/torb.db", isolation_level=isolation_level)
+    flask.g.db.row_factory = dict_factory
+    # cur = flask.g.db.cursor()
+    # cur.execute(
+    #     "SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,"
+    #     "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
     return flask.g.db
 
 
@@ -123,7 +131,7 @@ def teardown(error):
 
 def get_events(filter_fn=lambda e: True):
     conn = dbh()
-    conn.autocommit(False)
+    # conn.autocommit(False)
     cur = conn.cursor()
     try:
         cur.execute("SELECT * FROM events ORDER BY id ASC")
@@ -136,7 +144,7 @@ def get_events(filter_fn=lambda e: True):
                 del sheet['detail']
             events.append(event)
         conn.commit()
-    except MySQLdb.Error as e:
+    except sqlite3.Error as e:
         conn.rollback()
         raise e
     return events
@@ -145,7 +153,7 @@ def get_events(filter_fn=lambda e: True):
 def get_event(event_id, login_user_id=None):
     cur = dbh().cursor()
     ranks_data()
-    cur.execute("SELECT * FROM events WHERE id = %s", [event_id])
+    cur.execute("SELECT * FROM events WHERE id = ?", [event_id])
     event = cur.fetchone()
     if not event:
         return None
@@ -159,7 +167,7 @@ def get_event(event_id, login_user_id=None):
 
     cur.execute(
         "SELECT * FROM sheets LEFT OUTER JOIN reservations as r ON r.sheet_id = sheets.id"
-        " WHERE r.event_id = %s AND r.canceled_at IS NULL"
+        " WHERE r.event_id = ? AND r.canceled_at IS NULL"
         " GROUP BY sheet_id HAVING r.reserved_at = MIN(r.reserved_at)", [event['id']])
     reservations = cur.fetchall()
 
@@ -181,7 +189,9 @@ def get_event(event_id, login_user_id=None):
             if login_user_id and reservation['user_id'] == login_user_id:
                 sheet['mine'] = True
             sheet['reserved'] = True
-            sheet['reserved_at'] = int(reservation['reserved_at'].replace(tzinfo=timezone.utc).timestamp())
+            sheet['reserved_at'] = int(
+                time.mktime(datetime.strptime(
+                    fmt_datetime(reservation["reserved_at"]), "%Y-%m-%d %H:%M:%S.%f").timetuple()))
             event["remains"] -= 1
             event["sheets"][reservation["rank"]]["remains"] -= 1
 
@@ -207,7 +217,7 @@ def get_login_user():
         return None
     cur = dbh().cursor()
     user_id = flask.session['user_id']
-    cur.execute("SELECT id, nickname FROM users WHERE id = %s", [user_id])
+    cur.execute("SELECT id, nickname FROM users WHERE id = ?", [user_id])
     return cur.fetchone()
 
 
@@ -216,13 +226,13 @@ def get_login_administrator():
         return None
     cur = dbh().cursor()
     administrator_id = flask.session['administrator_id']
-    cur.execute("SELECT id, nickname FROM administrators WHERE id = %s", [administrator_id])
+    cur.execute("SELECT id, nickname FROM administrators WHERE id = ?", [administrator_id])
     return cur.fetchone()
 
 
 def validate_rank(rank):
     cur = dbh().cursor()
-    cur.execute("SELECT COUNT(*) AS total_sheets FROM sheets WHERE `rank` = %s", [rank])
+    cur.execute("SELECT COUNT(*) AS total_sheets FROM sheets WHERE `rank` = ?", [rank])
     ret = cur.fetchone()
     return int(ret['total_sheets']) > 0
 
@@ -267,21 +277,21 @@ def post_users():
     login_name = flask.request.json['login_name']
     password = flask.request.json['password']
 
-    conn = dbh()
-    conn.autocommit(False)
+    conn = dbh("DEFERRED")
+    # conn.autocommit(False)
     cur = conn.cursor()
     try:
-        cur.execute("SELECT * FROM users WHERE login_name = %s", [login_name])
+        cur.execute("SELECT * FROM users WHERE login_name = ?", [login_name])
         duplicated = cur.fetchone()
-        if duplicated:
+        if duplicated is not None:
             conn.rollback()
             return res_error('duplicated', 409)
+        p_hash = hashlib.sha256(password.encode()).hexdigest()
         cur.execute(
-            "INSERT INTO users (login_name, pass_hash, nickname) VALUES (%s, SHA2(%s, 256), %s)",
-            [login_name, password, nickname])
+            "INSERT INTO users (login_name, pass_hash, nickname) VALUES (?, ?, ?)", (login_name, p_hash, nickname))
         user_id = cur.lastrowid
         conn.commit()
-    except MySQLdb.Error as e:
+    except sqlite3.Error as e:
         conn.rollback()
         print(e)
         return res_error()
@@ -292,14 +302,14 @@ def post_users():
 @login_required
 def get_users(user_id):
     cur = dbh().cursor()
-    cur.execute('SELECT id, nickname FROM users WHERE id = %s', [user_id])
+    cur.execute('SELECT id, nickname FROM users WHERE id = ?', [user_id])
     user = cur.fetchone()
     if user['id'] != get_login_user()['id']:
         return '', 403
 
     cur.execute(
         "SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num FROM reservations r INNER JOIN sheets s"
-        " ON s.id = r.sheet_id WHERE r.user_id = %s ORDER BY IFNULL(r.canceled_at, r.reserved_at) DESC LIMIT 5",
+        " ON s.id = r.sheet_id WHERE r.user_id = ? ORDER BY IFNULL(r.canceled_at, r.reserved_at) DESC LIMIT 5",
         [user['id']])
     recent_reservations = []
     for row in cur.fetchall():
@@ -310,7 +320,9 @@ def get_users(user_id):
         del event['remains']
 
         if row['canceled_at']:
-            canceled_at = int(row['canceled_at'].replace(tzinfo=timezone.utc).timestamp())
+            # canceled_at = int(row['canceled_at'].replace(tzinfo=timezone.utc).timestamp())
+            canceled_at = int(
+                time.mktime(datetime.strptime(fmt_datetime(row['canceled_at']), "%Y-%m-%d %H:%M:%S.%f").timetuple()))
         else:
             canceled_at = None
 
@@ -320,20 +332,21 @@ def get_users(user_id):
             "sheet_rank": row['sheet_rank'],
             "sheet_num": int(row['sheet_num']),
             "price": int(price),
-            "reserved_at": int(row['reserved_at'].replace(tzinfo=timezone.utc).timestamp()),
+            "reserved_at": int(
+                time.mktime(datetime.strptime(fmt_datetime(row['reserved_at']), "%Y-%m-%d %H:%M:%S.%f").timetuple())),
             "canceled_at": canceled_at,
         })
 
     user['recent_reservations'] = recent_reservations
     cur.execute(
         "SELECT IFNULL(SUM(e.price + s.price), 0) AS total_price FROM reservations r INNER JOIN sheets s"
-        " ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id WHERE r.user_id = %s AND r.canceled_at IS NULL",
+        " ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id WHERE r.user_id = ? AND r.canceled_at IS NULL",
         [user['id']])
     row = cur.fetchone()
     user['total_price'] = int(row['total_price'])
 
     cur.execute(
-        "SELECT event_id FROM reservations WHERE user_id = %s GROUP BY event_id"
+        "SELECT event_id FROM reservations WHERE user_id = ? GROUP BY event_id"
         " ORDER BY MAX(IFNULL(canceled_at, reserved_at)) DESC LIMIT 5",
         [user['id']])
     rows = cur.fetchall()
@@ -355,9 +368,10 @@ def post_login():
 
     cur = dbh().cursor()
 
-    cur.execute('SELECT * FROM users WHERE login_name = %s', [login_name])
+    cur.execute('SELECT * FROM users WHERE login_name = ?', [login_name])
     user = cur.fetchone()
-    cur.execute('SELECT SHA2(%s, 256) AS pass_hash', [password])
+    p_hash = hashlib.sha256(password.encode()).hexdigest()
+    cur.execute('SELECT ? AS pass_hash', [p_hash])
     pass_hash = cur.fetchone()
     if not user or pass_hash['pass_hash'] != user['pass_hash']:
         return res_error("authentication_failed", 401)
@@ -412,24 +426,24 @@ def post_reserve(event_id):
 
     reservation_id = 0
 
-    conn = dbh()
+    conn = dbh("DEFERRED")
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM sheets WHERE id NOT IN (SELECT sheet_id FROM reservations WHERE event_id = %s"
-        " AND canceled_at IS NULL FOR UPDATE) AND `rank` =%s ORDER BY RAND() LIMIT 1",
+        "SELECT * FROM sheets WHERE id NOT IN (SELECT sheet_id FROM reservations WHERE event_id = ?"
+        " AND canceled_at IS NULL) AND `rank` =? ORDER BY RANDOM() LIMIT 1",
         [event['id'], rank])
     sheet = cur.fetchone()
     if not sheet:
         return res_error("sold_out", 409)
     try:
-        conn.autocommit(False)
+        # conn.autocommit(False)
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO reservations (event_id, sheet_id, user_id, reserved_at) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO reservations (event_id, sheet_id, user_id, reserved_at) VALUES (?, ?, ?, ?)",
             [event['id'], sheet['id'], user['id'], datetime.utcnow().strftime("%F %T.%f")])
         reservation_id = cur.lastrowid
         conn.commit()
-    except MySQLdb.Error as e:
+    except sqlite3.Error as e:
         conn.rollback()
         print(e)
 
@@ -452,19 +466,19 @@ def delete_reserve(event_id, rank, num):
         return res_error("invalid_rank", 404)
 
     cur = dbh().cursor()
-    cur.execute('SELECT * FROM sheets WHERE `rank` = %s AND num = %s', [rank, num])
+    cur.execute('SELECT * FROM sheets WHERE `rank` = ? AND num = ?', [rank, num])
     sheet = cur.fetchone()
     if not sheet:
         return res_error("invalid_sheet", 404)
 
-    conn = dbh()
+    conn = dbh("DEFERRED")
     try:
-        conn.autocommit(False)
+        # conn.autocommit(False)
         cur = conn.cursor()
 
         cur.execute(
-            "SELECT * FROM reservations WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL"
-            " GROUP BY event_id HAVING reserved_at = MIN(reserved_at) FOR UPDATE",
+            "SELECT * FROM reservations WHERE event_id = ? AND sheet_id = ? AND canceled_at IS NULL"
+            " GROUP BY event_id HAVING reserved_at = MIN(reserved_at)",
             [event['id'], sheet['id']])
         reservation = cur.fetchone()
 
@@ -472,14 +486,17 @@ def delete_reserve(event_id, rank, num):
             conn.rollback()
             return res_error("not_reserved", 400)
         if reservation['user_id'] != user['id']:
+            from pprint import pprint
+            pprint(user)
+            pprint(reservation)
             conn.rollback()
             return res_error("not_permitted", 403)
 
         cur.execute(
-            "UPDATE reservations SET canceled_at = %s WHERE id = %s",
+            "UPDATE reservations SET canceled_at = ? WHERE id = ?",
             [datetime.utcnow().strftime("%F %T.%f"), reservation['id']])
         conn.commit()
-    except MySQLdb.Error as e:
+    except sqlite3.Error as e:
         conn.rollback()
         print(e)
         return res_error()
@@ -505,9 +522,10 @@ def post_adin_login():
 
     cur = dbh().cursor()
 
-    cur.execute('SELECT * FROM administrators WHERE login_name = %s', [login_name])
+    cur.execute('SELECT * FROM administrators WHERE login_name = ?', [login_name])
     administrator = cur.fetchone()
-    cur.execute('SELECT SHA2(%s, 256) AS pass_hash', [password])
+    p_hash = hashlib.sha256(password.encode()).hexdigest()
+    cur.execute('SELECT ? AS pass_hash', [p_hash])
     pass_hash = cur.fetchone()
 
     if not administrator or pass_hash['pass_hash'] != administrator['pass_hash']:
@@ -539,16 +557,16 @@ def post_admin_events_api():
     price = flask.request.json['price']
 
     conn = dbh()
-    conn.autocommit(False)
+    # conn.autocommit(False)
     cur = conn.cursor()
     event_id = None
     try:
         cur.execute(
-            "INSERT INTO events (title, public_fg, closed_fg, price) VALUES (%s, %s, 0, %s)",
+            "INSERT INTO events (title, public_fg, closed_fg, price) VALUES (?, ?, 0, ?)",
             [title, public, price])
         event_id = cur.lastrowid
         conn.commit()
-    except MySQLdb.Error as e:
+    except sqlite3.Error as e:
         conn.rollback()
         print(e)
     return jsonify(get_event(event_id))
@@ -581,14 +599,14 @@ def post_event_edit(event_id):
         return res_error('cannot_close_public_event', 400)
 
     conn = dbh()
-    conn.autocommit(False)
+    # conn.autocommit(False)
     cur = conn.cursor()
     try:
         cur.execute(
-            "UPDATE events SET public_fg = %s, closed_fg = %s WHERE id = %s",
+            "UPDATE events SET public_fg = ?, closed_fg = ? WHERE id = ?",
             [public, closed, event['id']])
         conn.commit()
-    except MySQLdb.Error:
+    except sqlite3.Error:
         conn.rollback()
     return jsonify(get_event(event_id))
 
@@ -598,18 +616,19 @@ def post_event_edit(event_id):
 def get_admin_event_sales(event_id):
     event = get_event(event_id)
 
-    cur = dbh().cursor()
+    cur = dbh("DEFERRED").cursor()
     cur.execute(
         'SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num, s.price AS sheet_price, e.price AS event_price'
         ' FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id'
-        ' WHERE r.event_id = %s ORDER BY reserved_at ASC FOR UPDATE',
+        ' WHERE r.event_id = ? ORDER BY reserved_at ASC',
         [event['id']])
     reservations = cur.fetchall()
     reports = []
 
     for reservation in reservations:
         if reservation['canceled_at']:
-            canceled_at = reservation['canceled_at'].isoformat() + "Z"
+            canceled_at = datetime.strptime(
+                fmt_datetime(reservation['canceled_at']), "%Y-%m-%d %H:%M:%S.%f").isoformat() + "Z"
         else:
             canceled_at = ''
         reports.append({
@@ -618,7 +637,8 @@ def get_admin_event_sales(event_id):
             "rank":           reservation['sheet_rank'],
             "num":            reservation['sheet_num'],
             "user_id":        reservation['user_id'],
-            "sold_at":        reservation['reserved_at'].isoformat()+"Z",
+            "sold_at":        datetime.strptime(
+                fmt_datetime(reservation['reserved_at']), "%Y-%m-%d %H:%M:%S.%f").isoformat()+"Z",
             "canceled_at":    canceled_at,
             "price":          reservation['event_price'] + reservation['sheet_price'],
         })
@@ -629,17 +649,18 @@ def get_admin_event_sales(event_id):
 @app.route('/admin/api/reports/sales')
 @admin_login_required
 def get_admin_sales():
-    cur = dbh().cursor()
+    cur = dbh("DEFERRED").cursor()
     cur.execute(
         'SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num, s.price AS sheet_price, e.id AS event_id, e.price'
         ' AS event_price FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e'
-        ' ON e.id = r.event_id ORDER BY reserved_at ASC FOR UPDATE')
+        ' ON e.id = r.event_id ORDER BY reserved_at ASC')
     reservations = cur.fetchall()
 
     reports = []
     for reservation in reservations:
         if reservation['canceled_at']:
-            canceled_at = reservation['canceled_at'].isoformat()+"Z"
+            canceled_at = datetime.strptime(
+                fmt_datetime(reservation['canceled_at']), "%Y-%m-%d %H:%M:%S.%f").isoformat()+"Z"
         else:
             canceled_at = ''
         reports.append({
@@ -648,7 +669,8 @@ def get_admin_sales():
             "rank":           reservation['sheet_rank'],
             "num":            reservation['sheet_num'],
             "user_id":        reservation['user_id'],
-            "sold_at":        reservation['reserved_at'].isoformat()+"Z",
+            "sold_at":        datetime.strptime(
+                fmt_datetime(reservation['reserved_at']), "%Y-%m-%d %H:%M:%S.%f").isoformat()+"Z",
             "canceled_at":    canceled_at,
             "price":          reservation['event_price'] + reservation['sheet_price'],
         })

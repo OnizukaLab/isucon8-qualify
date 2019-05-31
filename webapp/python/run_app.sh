@@ -8,4 +8,6 @@ mysql -uroot -e"GRANT ALL on torb.* TO isucon@'%';"
 mysql -uroot -e"CREATE USER isucon@'localhost' IDENTIFIED BY 'isucon';"
 mysql -uroot -e"GRANT ALL on torb.* TO isucon@'localhost';"
 ${ROOT}/db/init.sh
+/mysql2sqlite.sh  -u isucon -pisucon torb | sqlite3 ${ROOT}/torb.sqlite
 DB_DATABASE=torb DB_HOST=127.0.0.1 DB_PORT=3306 DB_USER=isucon DB_PASS=isucon python ${APP}/app.py
+

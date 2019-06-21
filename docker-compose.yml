@@ -1,0 +1,14 @@
+version: '2'
+
+services:
+  isucon:
+    container_name: app
+    build: ./
+    volumes:
+      - .:/root/isucon8-qualify
+    tty: true
+    ports:
+      - "8080:8080"
+    mem_limit: 1g
+
+

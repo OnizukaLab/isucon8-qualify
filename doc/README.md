@@ -30,7 +30,7 @@ docker build -t isucon8 .
 #### ウェブアプリ起動
 ```bash
 cd path/to/isucon8-qualify
-docker run -p 8080:8080 -it --name app --cap-add=SYS_PTRACE -v `pwd`:/root/isucon8-qualify isucon8 sh run_app.sh
+docker run -p 8080:8080 -it --name app -v `pwd`:/root/isucon8-qualify isucon8 bash run_app.sh
 ```
 #### ベンチマーク実行
 初回だけ実行
@@ -42,7 +42,7 @@ make
 ```
 
 ```bash
-docker exec -it isucon8 /bin/bash
+docker exec -it app /bin/bash
 cd ../../bench
 ./bin/bench -remotes=127.0.0.1:8080 -output result.json
 jq . < result.json
@@ -50,7 +50,7 @@ jq . < result.json
 
 #### FlameGraph 描画
 ```bash
-docker exec -it isucon8 /bin/bash
+docker exec -it app /bin/bash
 ps aux | grep python  # app.py の pid を確認
 py-spy --flame profile.svg -d 60 -r 100 -p XXXX  # 60 秒間，# 100回/秒 の頻度でサンプリング
 ```

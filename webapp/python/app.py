@@ -188,8 +188,8 @@ def get_event(event_id, login_user_id=None):
         event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': []}
 
     cur.execute(
-        "SELECT * FROM sheets LEFT OUTER JOIN reservations as r ON r.sheet_id = sheets.id"
-        " WHERE r.event_id = %s AND r.canceled_at IS NULL"
+        "SELECT num, user_id, reserved_at, rank, sheet_id FROM sheets LEFT OUTER JOIN reservations as r"
+        " ON r.sheet_id = sheets.id WHERE r.event_id = %s AND r.canceled_at IS NULL"
         " GROUP BY sheet_id HAVING r.reserved_at = MIN(r.reserved_at)", [event['id']])
     reservations = cur.fetchall()
 
@@ -203,18 +203,12 @@ def get_event(event_id, login_user_id=None):
     event["remains"] = sum(ranks_num.values())
     event['total'] = sum(ranks_num.values())
     for reservation in reservations:
-        sheet = {
-            "num": reservation["num"]
-        }
-
-        if reservation:
-            if login_user_id and reservation['user_id'] == login_user_id:
-                sheet['mine'] = True
-            sheet['reserved'] = True
-            sheet['reserved_at'] = int(reservation['reserved_at'].replace(tzinfo=timezone.utc).timestamp())
-            event["remains"] -= 1
-            event["sheets"][reservation["rank"]]["remains"] -= 1
-
+        sheet = {"num": reservation["num"],
+                 "mine": True if login_user_id and reservation['user_id'] == login_user_id else False,
+                 "reserved": True,
+                 "reserved_at": int(reservation['reserved_at'].replace(tzinfo=timezone.utc).timestamp())}
+        event["remains"] -= 1
+        event["sheets"][reservation["rank"]]["remains"] -= 1
         event['sheets'][reservation['rank']]['detail'][ranks_id[reservation["rank"]][reservation["sheet_id"]]] = sheet
 
     event['public'] = True if event['public_fg'] else False

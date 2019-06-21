@@ -16,6 +16,8 @@ icons_folder = base_path / 'public' / 'icons'
 ranks_num = None
 ranks_id = None
 ranks_price = None
+user_id_hash = dict()
+user_name_hash = dict()
 
 
 class CustomFlask(flask.Flask):
@@ -92,6 +94,34 @@ def dbh():
         "SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,"
         "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
     return flask.g.db
+
+
+def get_user_id_hash(user_id, cur):
+    global user_id_hash
+    if user_id in user_id_hash:
+        return user_id_hash[user_id]
+    else:
+        cur.execute("SELECT id, nickname FROM users WHERE id = %s", [user_id])
+        user = cur.fetchone()
+        if user is not None:
+            user_id_hash[user_id] = user
+        return user
+
+
+def get_user_name_hash(user_name, cur):
+    global user_name_hash
+    if user_name in user_name_hash:
+        return user_name_hash[user_name]
+    else:
+        cur.execute("SELECT * FROM users WHERE login_name = %s", [user_name])
+        user = cur.fetchone()
+        if user is not None:
+            user_name_hash[user_name] = user
+        return user
+
+
+def extract_public_fg(e):
+    return e["public_fg"]
 
 
 def ranks_data():
@@ -207,8 +237,7 @@ def get_login_user():
         return None
     cur = dbh().cursor()
     user_id = flask.session['user_id']
-    cur.execute("SELECT id, nickname FROM users WHERE id = %s", [user_id])
-    return cur.fetchone()
+    return get_user_id_hash(user_id, cur)
 
 
 def get_login_administrator():
@@ -250,7 +279,7 @@ def render_report_csv(reports):
 def get_index():
     user = get_login_user()
     events = []
-    for event in get_events(lambda e: e["public_fg"]):
+    for event in get_events(extract_public_fg):
         events.append(sanitize_event(event))
     return flask.render_template('index.html', user=user, events=events, base_url=make_base_url(flask.request))
 
@@ -271,8 +300,7 @@ def post_users():
     conn.autocommit(False)
     cur = conn.cursor()
     try:
-        cur.execute("SELECT * FROM users WHERE login_name = %s", [login_name])
-        duplicated = cur.fetchone()
+        duplicated = get_user_name_hash(login_name, cur)
         if duplicated:
             conn.rollback()
             return res_error('duplicated', 409)
@@ -292,8 +320,7 @@ def post_users():
 @login_required
 def get_users(user_id):
     cur = dbh().cursor()
-    cur.execute('SELECT id, nickname FROM users WHERE id = %s', [user_id])
-    user = cur.fetchone()
+    user = get_user_id_hash(user_id, cur)
     if user['id'] != get_login_user()['id']:
         return '', 403
 
@@ -354,9 +381,7 @@ def post_login():
     password = flask.request.json['password']
 
     cur = dbh().cursor()
-
-    cur.execute('SELECT * FROM users WHERE login_name = %s', [login_name])
-    user = cur.fetchone()
+    user = get_user_name_hash(login_name, cur)
     cur.execute('SELECT SHA2(%s, 256) AS pass_hash', [password])
     pass_hash = cur.fetchone()
     if not user or pass_hash['pass_hash'] != user['pass_hash']:
@@ -377,7 +402,7 @@ def post_logout():
 @app.route('/api/events')
 def get_events_api():
     events = []
-    for event in get_events(lambda e: e["public_fg"]):
+    for event in get_events(extract_public_fg):
         events.append(sanitize_event(event))
     return jsonify(events)
 
@@ -604,25 +629,15 @@ def get_admin_event_sales(event_id):
         ' FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id'
         ' WHERE r.event_id = %s ORDER BY reserved_at ASC FOR UPDATE',
         [event['id']])
-    reservations = cur.fetchall()
-    reports = []
-
-    for reservation in reservations:
-        if reservation['canceled_at']:
-            canceled_at = reservation['canceled_at'].isoformat() + "Z"
-        else:
-            canceled_at = ''
-        reports.append({
-            "reservation_id": reservation['id'],
-            "event_id":       event['id'],
-            "rank":           reservation['sheet_rank'],
-            "num":            reservation['sheet_num'],
-            "user_id":        reservation['user_id'],
-            "sold_at":        reservation['reserved_at'].isoformat()+"Z",
-            "canceled_at":    canceled_at,
-            "price":          reservation['event_price'] + reservation['sheet_price'],
-        })
-
+    reports = [{
+        "reservation_id": reservation['id'],
+        "event_id":       event['id'],
+        "rank":           reservation['sheet_rank'],
+        "num":            reservation['sheet_num'],
+        "user_id":        reservation['user_id'],
+        "sold_at":        reservation['reserved_at'].isoformat()+"Z",
+        "canceled_at":    reservation['canceled_at'].isoformat() + "Z" if reservation['canceled_at'] else "",
+        "price":          reservation['event_price'] + reservation['sheet_price']} for reservation in cur.fetchall()]
     return render_report_csv(reports)
 
 
@@ -634,24 +649,15 @@ def get_admin_sales():
         'SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num, s.price AS sheet_price, e.id AS event_id, e.price'
         ' AS event_price FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e'
         ' ON e.id = r.event_id ORDER BY reserved_at ASC FOR UPDATE')
-    reservations = cur.fetchall()
-
-    reports = []
-    for reservation in reservations:
-        if reservation['canceled_at']:
-            canceled_at = reservation['canceled_at'].isoformat()+"Z"
-        else:
-            canceled_at = ''
-        reports.append({
-            "reservation_id": reservation['id'],
-            "event_id":       reservation['event_id'],
-            "rank":           reservation['sheet_rank'],
-            "num":            reservation['sheet_num'],
-            "user_id":        reservation['user_id'],
-            "sold_at":        reservation['reserved_at'].isoformat()+"Z",
-            "canceled_at":    canceled_at,
-            "price":          reservation['event_price'] + reservation['sheet_price'],
-        })
+    reports = [{
+        "reservation_id": reservation['id'],
+        "event_id":       reservation['event_id'],
+        "rank":           reservation['sheet_rank'],
+        "num":            reservation['sheet_num'],
+        "user_id":        reservation['user_id'],
+        "sold_at":        reservation['reserved_at'].isoformat()+"Z",
+        "canceled_at":    reservation['canceled_at'].isoformat()+"Z" if reservation['canceled_at'] else "",
+        "price":          reservation['event_price'] + reservation['sheet_price']} for reservation in cur.fetchall()]
     return render_report_csv(reports)
 
 

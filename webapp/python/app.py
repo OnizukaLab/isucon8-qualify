@@ -108,7 +108,7 @@ def ranks_data():
         ranks_price = {e["rank"]: e["price"] for e in cur.fetchall()}
 
     if ranks_id is None:
-        cur.execute("SELECT * FROM sheets ORDER BY `rank`, num")
+        cur.execute("SELECT rank, id FROM sheets ORDER BY `rank`, num")
         sheets = cur.fetchall()
         ranks_id = {k: dict() for k in ranks_num.keys()}
         for sheet in sheets:
@@ -157,10 +157,10 @@ def get_event(event_id, login_user_id=None):
     for rank in ranks_num.keys():
         event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': []}
 
+    # これが非常に重く、何回も検索
     cur.execute(
-        "SELECT * FROM sheets LEFT OUTER JOIN reservations as r ON r.sheet_id = sheets.id"
-        " WHERE r.event_id = %s AND r.canceled_at IS NULL"
-        " GROUP BY sheet_id HAVING r.reserved_at = MIN(r.reserved_at)", [event['id']])
+        "SELECT num, r.user_id, r.reserved_at, rank, r.sheet_id FROM sheets LEFT OUTER JOIN (SELECT user_id, reserved_at,sheet_id FROM reservations WHERE event_id = %s AND canceled_at IS NULL) as r ON r.sheet_id = sheets.id"
+        " GROUP BY r.sheet_id HAVING r.reserved_at = MIN(r.reserved_at)", [event['id']])
     reservations = cur.fetchall()
 
     for rank in ranks_num.keys():
@@ -222,7 +222,7 @@ def get_login_administrator():
 
 def validate_rank(rank):
     cur = dbh().cursor()
-    cur.execute("SELECT COUNT(*) AS total_sheets FROM sheets WHERE `rank` = %s", [rank])
+    cur.execute("SELECT COUNT(id) AS total_sheets FROM sheets WHERE `rank` = %s", [rank])
     ret = cur.fetchone()
     return int(ret['total_sheets']) > 0
 

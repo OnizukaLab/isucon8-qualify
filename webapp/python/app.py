@@ -93,7 +93,7 @@ def dict_factory(cursor, row):
 def dbh(isolation_level=None):
     if hasattr(flask.g, 'db'):
         return flask.g.db
-    flask.g.db = sqlite3.connect("/root/isucon8-qualify/db/torb.db", isolation_level=isolation_level)
+    flask.g.db = sqlite3.connect("/torb.db", isolation_level=isolation_level)
     flask.g.db.row_factory = dict_factory
     # cur = flask.g.db.cursor()
     # cur.execute(

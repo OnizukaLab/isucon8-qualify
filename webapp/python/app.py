@@ -130,15 +130,15 @@ def ranks_data():
         return
     cur = dbh().cursor()
     if ranks_num is None:
-        cur.execute("SELECT rank, COUNT(id) FROM sheets GROUP BY rank")
+        cur.execute("SELECT rank, COUNT(id) FROM sheets_base GROUP BY rank")
         ranks_num = {e["rank"]: e["COUNT(id)"] for e in cur.fetchall()}
 
     if ranks_price is None:
-        cur.execute("SELECT price, rank FROM sheets GROUP BY rank")
+        cur.execute("SELECT price, rank FROM sheets_base GROUP BY rank")
         ranks_price = {e["rank"]: e["price"] for e in cur.fetchall()}
 
     if ranks_id is None:
-        cur.execute("SELECT * FROM sheets ORDER BY `rank`, num")
+        cur.execute("SELECT * FROM sheets_base ORDER BY `rank`, num")
         sheets = cur.fetchall()
         ranks_id = {k: dict() for k in ranks_num.keys()}
         for sheet in sheets:
@@ -188,8 +188,8 @@ def get_event(event_id, login_user_id=None):
         event["sheets"][rank] = {'total': 0, 'remains': 0, 'detail': []}
 
     cur.execute(
-        "SELECT num, user_id, reserved_at, rank, sheet_id FROM sheets LEFT OUTER JOIN reservations as r"
-        " ON r.sheet_id = sheets.id WHERE r.event_id = %s AND r.canceled_at IS NULL"
+        "SELECT num, user_id, reserved_at, rank, sheet_id FROM sheets_base LEFT OUTER JOIN reservations as r"
+        " ON r.sheet_id = sheets_base.id WHERE r.event_id = %s AND r.canceled_at IS NULL"
         " GROUP BY sheet_id HAVING r.reserved_at = MIN(r.reserved_at)", [event['id']])
     reservations = cur.fetchall()
 
@@ -319,7 +319,7 @@ def get_users(user_id):
         return '', 403
 
     cur.execute(
-        "SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num FROM reservations r INNER JOIN sheets s"
+        "SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num FROM reservations r INNER JOIN sheets_base s"
         " ON s.id = r.sheet_id WHERE r.user_id = %s ORDER BY IFNULL(r.canceled_at, r.reserved_at) DESC LIMIT 5",
         [user['id']])
     recent_reservations = []
@@ -434,12 +434,12 @@ def post_reserve(event_id):
     conn = dbh()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM sheets WHERE id NOT IN (SELECT sheet_id FROM reservations WHERE event_id = %s"
-        " AND canceled_at IS NULL FOR UPDATE) AND `rank` =%s ORDER BY RAND() LIMIT 1",
-        [event['id'], rank])
+        "SELECT * FROM sheets WHERE isUsed = 0 and event_id = %s AND `rank` =%s ORDER BY RAND() LIMIT 1 FOR UPDATE",[event['id'], rank])
     sheet = cur.fetchone()
     if not sheet:
         return res_error("sold_out", 409)
+
+    cur.execute("UPDATE sheets SET isUsed = 1 WHERE id = %s AND event_id = %s", [sheet['id'], sheet['event_id']])
     try:
         conn.autocommit(False)
         cur = conn.cursor()
@@ -480,7 +480,6 @@ def delete_reserve(event_id, rank, num):
     try:
         conn.autocommit(False)
         cur = conn.cursor()
-
         cur.execute(
             "SELECT * FROM reservations WHERE event_id = %s AND sheet_id = %s AND canceled_at IS NULL"
             " GROUP BY event_id HAVING reserved_at = MIN(reserved_at) FOR UPDATE",
@@ -493,10 +492,12 @@ def delete_reserve(event_id, rank, num):
         if reservation['user_id'] != user['id']:
             conn.rollback()
             return res_error("not_permitted", 403)
-
         cur.execute(
             "UPDATE reservations SET canceled_at = %s WHERE id = %s",
             [datetime.utcnow().strftime("%F %T.%f"), reservation['id']])
+        cur.execute(
+                "UPDATE sheets SET isUsed = %s WHERE id = %s AND event_id = %s", [0, reservation['sheet_id'], reservation['event_id']]
+                )
         conn.commit()
     except MySQLdb.Error as e:
         conn.rollback()
@@ -566,6 +567,7 @@ def post_admin_events_api():
             "INSERT INTO events (title, public_fg, closed_fg, price) VALUES (%s, %s, 0, %s)",
             [title, public, price])
         event_id = cur.lastrowid
+        cur.execute('INSERT INTO sheets (id, rank, num, price, event_id) SELECT id, rank, num, price, %s FROM sheets_base', [event_id])
         conn.commit()
     except MySQLdb.Error as e:
         conn.rollback()
@@ -620,7 +622,7 @@ def get_admin_event_sales(event_id):
     cur = dbh().cursor()
     cur.execute(
         'SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num, s.price AS sheet_price, e.price AS event_price'
-        ' FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id'
+        ' FROM reservations r INNER JOIN sheets_base s ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id'
         ' WHERE r.event_id = %s ORDER BY reserved_at ASC FOR UPDATE',
         [event['id']])
     reports = [{
@@ -641,7 +643,7 @@ def get_admin_sales():
     cur = dbh().cursor()
     cur.execute(
         'SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num, s.price AS sheet_price, e.id AS event_id, e.price'
-        ' AS event_price FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e'
+        ' AS event_price FROM reservations r INNER JOIN sheets_base s ON s.id = r.sheet_id INNER JOIN events e'
         ' ON e.id = r.event_id ORDER BY reserved_at ASC FOR UPDATE')
     reports = [{
         "reservation_id": reservation['id'],

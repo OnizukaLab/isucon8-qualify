@@ -10,6 +10,12 @@ from io import StringIO
 import csv
 from datetime import datetime, timezone
 
+os.environ["DB_DATABASE"]="torb"
+os.environ["DB_HOST"]="db"
+os.environ["DB_PORT"]="3306"
+os.environ["DB_USER"]="isucon"
+os.environ["DB_PASS"]="isucon"
+
 base_path = pathlib.Path(__file__).resolve().parent.parent
 static_folder = base_path / 'static'
 icons_folder = base_path / 'public' / 'icons'

@@ -1,21 +1,44 @@
 version: '2'
 
 services:
-  isucon8:
-    build: .
-    image: isucon8
-
-  web1:
-    image: isucon8
-    mem_limit: 1g
-    cap_add:
-      - SYS_PTRACE
+  nginx:
+    build: ./nginx
+    container_name: nginx
     volumes:
-      - ../isucon8-qualify:/root/isucon8-qualify
-    command: sh run_app.sh
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - "4231:80"
+    environment:
+      TZ: "Asia/Tokyo"
+    links:
+      - "uwsgi"
+
+
+  uwsgi:
+    build: .
+    container_name: uwsgi
+    volumes:
+      - '.:/root/isucon8-qualify'
+    ports:
+      - "3031:3031"
+    environment:
+      TZ: "Asia/Tokyo"
+    tty: true
+    command: "uwsgi --ini /root/isucon8-qualify/webapp/python/uwsgi.ini"
+    links:
+      - "db"
+
+    #  web1:
+    #    image: isucon8
+    #    mem_limit: 1g
+    #    cap_add:
+    #      - SYS_PTRACE
+    #    volumes:
+    #      - ../isucon8-qualify:/root/isucon8-qualify
+    #    command: sh run_app.sh
 
   web2:
-    image: isucon8
+    image: yusukew/istandalone
     mem_limit: 1g
     cap_add:
       - SYS_PTRACE
@@ -24,9 +47,12 @@ services:
     command: sh run_app.sh
 
   db:
-    image: isucon8
+    image: yusukew/istandalone
+    container_name: db
+    tty: true
 
   bench:
-    image: isucon8
+    image: yusukew/istandalone
     volumes:
       - ../isucon8-qualify:/root/isucon8-qualify
+    tty: true

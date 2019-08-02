@@ -1,0 +1,32 @@
+version: '2'
+
+services:
+  isucon8:
+    build: .
+    image: isucon8
+
+  web1:
+    image: isucon8
+    mem_limit: 1g
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - ../isucon8-qualify:/root/isucon8-qualify
+    command: sh run_app.sh
+
+  web2:
+    image: isucon8
+    mem_limit: 1g
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - ../isucon8-qualify:/root/isucon8-qualify
+    command: sh run_app.sh
+
+  db:
+    image: isucon8
+
+  bench:
+    image: isucon8
+    volumes:
+      - ../isucon8-qualify:/root/isucon8-qualify

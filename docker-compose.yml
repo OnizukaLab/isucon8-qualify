@@ -47,9 +47,17 @@ services:
     command: sh run_app.sh
 
   db:
-    image: yusukew/istandalone
+    build: db
     container_name: db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: torb
+      MYSQL_USER: isucon
+      MYSQL_PASSWORD: isucon
+      BIND-ADDRESS: 0.0.0.0
     tty: true
+    ports:
+      - 3306:3306
 
   bench:
     image: yusukew/istandalone

@@ -7,9 +7,9 @@ mysql -uroot -e"GRANT ALL on torb.* TO isucon@'locahost';"
 mysql -uroot -e"SET GLOBAL max_heap_table_size = 1024 * 1024 * 800;"
 #${ROOT}/db/init.sh
 
-ROOT_DIR=$(cd $(dirname $0)/..; pwd)
-DB_DIR="$ROOT_DIR/db"
-BENCH_DIR="$ROOT_DIR/bench"
+#ROOT_DIR=$(cd $(dirname $0)/..; pwd)
+DB_DIR="$ROOT/db"
+BENCH_DIR="$ROOT/bench"
 
 export MYSQL_PWD=isucon
 

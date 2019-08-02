@@ -1,4 +1,4 @@
-version: '2'
+version: '3'
 
 services:
   nginx:
@@ -10,23 +10,16 @@ services:
       - "4231:80"
     environment:
       TZ: "Asia/Tokyo"
-    links:
-      - "uwsgi"
 
-
-  uwsgi:
+  web1:
     build: .
-    container_name: uwsgi
+    container_name: web1
     volumes:
       - '.:/root/isucon8-qualify'
-    ports:
-      - "3031:3031"
     environment:
       TZ: "Asia/Tokyo"
     tty: true
     command: "uwsgi --ini /root/isucon8-qualify/webapp/python/uwsgi.ini"
-    links:
-      - "db"
 
     #  web1:
     #    image: isucon8
@@ -37,14 +30,23 @@ services:
     #      - ../isucon8-qualify:/root/isucon8-qualify
     #    command: sh run_app.sh
 
+    #web2:
+    #  image: yusukew/istandalone
+    #  cap_add:
+    #    - SYS_PTRACE
+    #  volumes:
+    #    - ../isucon8-qualify:/root/isucon8-qualify
+    #  command: sh run_app.sh
+
   web2:
-    image: yusukew/istandalone
-    mem_limit: 1g
-    cap_add:
-      - SYS_PTRACE
+    build: .
+    container_name: web2
     volumes:
-      - ../isucon8-qualify:/root/isucon8-qualify
-    command: sh run_app.sh
+      - '.:/root/isucon8-qualify'
+    environment:
+      TZ: "Asia/Tokyo"
+    tty: true
+    command: "uwsgi --ini /root/isucon8-qualify/webapp/python/uwsgi.ini"
 
   db:
     build: db
@@ -56,8 +58,6 @@ services:
       MYSQL_PASSWORD: isucon
       BIND-ADDRESS: 0.0.0.0
     tty: true
-    ports:
-      - 3306:3306
 
   bench:
     image: yusukew/istandalone
